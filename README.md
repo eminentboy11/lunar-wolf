@@ -20,6 +20,22 @@ Or `PHONE=2348012345678 node index.js` to get a **pairing code** instead.
 
 Optional: `OWNER_NUMBER=2348012345678` (comma-separate several) — seeds the owners list; your own linked number always counts for vv via fromMe.
 
+## Panel hosting (Pterodactyl / katabump)
+
+Works behind a repo-loader (download zip → extract → run) with **no loader changes**:
+
+- Credentials are stored in **`session/`** and settings in **`data/`** — add both names to the loader's skip list (the usual June loader already skips `session` and `data`), so re-extraction never wipes the login.
+- The bot **never exits on connection drops** — it reconnects with backoff, so the panel keeps it "online".
+- Dependencies resolve from a `node_modules` at the panel root (require walks up from the extracted folder), or commit `node_modules` into your zip if the host doesn't install.
+- Pair on a headless panel: put `PHONE=2348012345678` in the panel `.env` (the loader injects it), restart, then read the **PAIRING CODE** from the console: WhatsApp → Linked devices → Link with phone number.
+
+Example panel `.env`:
+
+```
+PHONE=2348012345678
+OWNER_NUMBER=2348012345678
+```
+
 ## Config — `data/pmini.json`
 
 Edit by hand and restart (the file is created on first run):

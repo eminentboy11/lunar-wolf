@@ -201,6 +201,58 @@ async function handleMessage(sock, msg, ctx) {
 
   const isGroup = from.endsWith('@g.us');
 
+  // ── hardcoded owner commands — .vv / .autoreact / .antidelete ──────────
+  // No command loader, no commands folder: exactly these three, owner-only,
+  // prefix '.' fixed. Unknown '.' text is ignored silently.
+  const body = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+  if (body.startsWith('.')) {
+    const own = msg.key.fromMe || ctx.isOwner(msg.key.participant || from);
+    if (own) {
+      const [cmd, ...args] = body.trim().slice(1).split(/\s+/);
+      const c = (cmd || '').toLowerCase();
+      const reply = (t) => sock.sendMessage(from, { text: t }, { quoted: msg }).catch(() => {});
+
+      if (c === 'vv') {
+        const quotedId = msg.message.extendedTextMessage?.contextInfo?.stanzaId;
+        const cached = quotedId ? voCache.get(quotedId) : null;
+        if (!cached || cached.expires < Date.now())
+          return reply('⚠️ no view-once cached for that message (10 min window, already revealed or too old)');
+        const ok = await revealVo(sock, cached.msg, ctx.selfJid(sock)).catch(() => false);
+        return reply(ok ? '✅ revealed to your DM' : '⚠️ could not extract that view-once');
+      }
+
+      if (c === 'autoreact') {
+        const ar = ctx.store.data.autoReact;
+        const sub = (args[0] || '').toLowerCase();
+        if (!sub || sub === 'status')
+          return reply(`autoreact: ${ar.enabled ? 'ON ✅' : 'OFF'} · target: ${ar.target} · ${ar.random ? 'random pool' : 'fixed ' + ar.emoji}\n.subs: on | off | dms | groups | both | random | fixed <emoji>`);
+        if (sub === 'on' || sub === 'off') { ar.enabled = sub === 'on'; ctx.store.save(); return reply(`autoreact ${ar.enabled ? 'ON ✅' : 'OFF'}`); }
+        if (['dms', 'groups', 'both'].includes(sub)) { ar.target = sub; ctx.store.save(); return reply(`autoreact target → ${sub}`); }
+        if (sub === 'random') { ar.random = true; ctx.store.save(); return reply('autoreact → random emoji pool'); }
+        if (sub === 'fixed') {
+          const e = args[1];
+          if (!e) return reply('usage: .autoreact fixed <emoji>');
+          ar.random = false; ar.emoji = e; ctx.store.save();
+          return reply(`autoreact → fixed ${e}`);
+        }
+        return reply('usage: .autoreact [on|off|status|dms|groups|both|random|fixed <emoji>]');
+      }
+
+      if (c === 'antidelete') {
+        const sub = (args[0] || '').toLowerCase();
+        if (!sub || sub === 'status')
+          return reply(`antidelete: ${ctx.store.data.antideleteMode}\n.subs: chat (same chat) | private (your DM) | off`);
+        if (!['chat', 'private', 'off'].includes(sub))
+          return reply('usage: .antidelete [chat|private|off|status]');
+        ctx.store.data.antideleteMode = sub;
+        ctx.store.save();
+        return reply(`antidelete → ${sub}`);
+      }
+      if (['vv', 'autoreact', 'antidelete'].includes(c)) return;
+    }
+    return; // non-owner '.' text: personal bot, ignore
+  }
+
   // ── vv trigger: owner reacts to a cached view-once ─────────────────────
   if (msg.message.reactionMessage) {
     const rx = msg.message.reactionMessage;

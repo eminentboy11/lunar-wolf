@@ -45,6 +45,18 @@ PHONE=2348012345678
 OWNER_NUMBER=2348012345678
 ```
 
+## Owner commands
+
+Hardcoded, owner-only (your number / `OWNER_NUMBER` / fromMe), prefix `.` — no commands folder, no loader:
+
+| Command | Effect |
+|---|---|
+| `.antidelete` | show mode · `.antidelete chat\|private\|off` to switch (saved live) |
+| `.autoreact` | show state · `.autoreact on\|off` · `.autoreact dms\|groups\|both` · `.autoreact random` · `.autoreact fixed <emoji>` |
+| `.vv` | reply to a view-once with `.vv` → media revealed into your DM (same 10-min window as the reaction trigger) |
+
+Unknown `.` commands are ignored. Non-owners are ignored completely.
+
 ## Config — `data/pmini.json`
 
 Edit by hand and restart (the file is created on first run):

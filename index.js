@@ -59,6 +59,7 @@ log.warn = (...a) => console.log(stamp(), gradient('⚠ pmini', GOLD, [255, 140,
 log.err = (...a) => console.log(stamp(), gradient('✗ pmini', RED, PINK), ...a);
 log.grad = gradient; log.dim = dim; log.bold = bold; log.border = BORDER;
 
+const BUILD = '2026-10-08.3';
 let bannerShown = false;
 function banner() {
   if (bannerShown) return;
@@ -69,7 +70,7 @@ function banner() {
   console.log(gradient('  │', VIOLET, CYAN) + dim('      the quiet trio'));
   console.log(gradient('  ╰' + '─'.repeat(34), VIOLET, CYAN));
   console.log(dim('     autoreact · antidelete · vv — nothing else'));
-  console.log(dim('     node ' + process.version.replace('v', '') + ' · started ' + new Date().toLocaleString('en-GB', { hour12: false })));
+  console.log(dim('     node ' + process.version.replace('v', '') + ' · build ' + BUILD + ' · started ' + new Date().toLocaleString('en-GB', { hour12: false })));
   console.log();
 }
 
@@ -319,6 +320,8 @@ async function start() {
 
       if (connection === 'open') {
         retries = 0;
+        // self-heal: deliver any recently-captured view-once that never got revealed
+        setTimeout(() => handler.sweepUnrevealed(sock, ctx), 3000).unref?.();
         log.ok('connected as', bold(selfJid(sock)));
         log.ok('trio active:', gradient('autoreact ✓', GREEN, CYAN), gradient('antidelete ✓ (' + store.data.antideleteMode + ')', VIOLET, PINK), gradient('vv ✓', PINK, GOLD));
         if (!store.data.owners.length) log('tip: set OWNER_NUMBER=234xx… (env or .env) so your number can trigger vv');

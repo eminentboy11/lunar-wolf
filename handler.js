@@ -354,4 +354,37 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
   } catch (e) { ctx.log.warn('autoreact failed:', e.message); }
 }
 
-module.exports = { handleMessage, handleDelete, pruneHistory, _internals };
+/* ── boot sweep: deliver view-onces captured but never revealed ─────────
+ * Covers photos that arrived while the bot was down/restarting. Only recent
+ * history (30 min) is swept so old, already-seen media is never re-sent. */
+const SWEEP_WINDOW = 30 * 60 * 1000;
+async function sweepUnrevealed(sock, ctx) {
+  try {
+    const msgs = ctx.store.data.messages || {};
+    const cutoff = Date.now() - SWEEP_WINDOW;
+    let found = 0, sent = 0;
+    for (const chatId of Object.keys(msgs)) {
+      for (const id of Object.keys(msgs[chatId])) {
+        const entry = msgs[chatId][id];
+        if (!entry?.media || (entry.t || 0) < cutoff) continue;
+        if (wasRevealed(ctx, id)) continue;
+        const isVO = Object.values(entry.media).some(c => c && typeof c === 'object' && c.viewOnce);
+        if (!isVO) continue;
+        found++;
+        try {
+          const ok = await revealVo(sock, { message: entry.media }, ctx.selfJid(sock)).catch(() => false);
+          if (ok) {
+            sent++;
+            markRevealed(ctx, id);
+            delete msgs[chatId][id];
+            ctx.log.ok('vv sweep → your DM ✓ (' + String(id).slice(0, 10) + '…)');
+          }
+        } catch (_) { continue; }
+        continue;
+      }
+    }
+    if (found) { ctx.store.save(); ctx.log.ok('vv sweep: ' + sent + '/' + found + ' missed view-once(s) delivered'); }
+  } catch (e) { ctx.log.warn('vv sweep failed:', e.message); }
+}
+
+module.exports = { handleMessage, handleDelete, pruneHistory, sweepUnrevealed, _internals };

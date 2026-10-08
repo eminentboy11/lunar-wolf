@@ -228,8 +228,23 @@ async function autoRevealVo(sock, ctx, msg) {
 }
 
 /* ── main entry ───────────────────────────────────────────────────────── */
+//Add a diagnostic at the very beginning Temporarily change the beginning of your function to:
+
 async function handleMessage(sock, msg, ctx, replayed = false) {
-  if (!msg.message || !msg.key?.id) return;
+  console.log('[MESSAGE RECEIVED]', {
+    id: msg?.key?.id,
+    fromMe: msg?.key?.fromMe,
+    hasMessage: !!msg?.message,
+    messageKeys: Object.keys(msg?.message || {}),
+    replayed
+  });
+
+  if (!msg.message || !msg.key?.id) {
+    console.log('[MESSAGE SKIPPED]', msg?.key?.id);
+    return;
+  }
+
+  // Keep the rest of your existing code below.
 
   // LID DM fix — @lid jids need remoteJidAlt to actually reply
   let from = msg.key.remoteJid;

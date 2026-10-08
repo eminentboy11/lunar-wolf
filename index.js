@@ -30,7 +30,48 @@ const AUTH_DIR = path.join(ROOT, 'session');   // 'session' + 'data' survive rep
 const DATA_DIR = path.join(ROOT, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'pmini.json');
 
-const log = (...a) => console.log('[Pmini]', ...a);
+/* ── console theme — truecolor gradient, zero deps ────────────────────── */
+const T_RESET = '\x1b[0m';
+const rgb = (r, g, b) => `\x1b[38;2;${r};${g};${b}m`;
+const dim = (s) => `\x1b[2m${s}\x1b[22m`;
+const bold = (s) => `\x1b[1m${s}\x1b[22m`;
+const VIOLET = [167, 108, 255], PINK = [255, 92, 170], CYAN = [86, 226, 220], GOLD = [255, 196, 87], RED = [248, 81, 73], GREEN = [52, 211, 153];
+function gradient(text, from = VIOLET, to = PINK) {
+  const chars = [...String(text)];
+  const n = Math.max(1, chars.length - 1);
+  return chars.map((ch, i) => {
+    const t = i / n;
+    return rgb(
+      Math.round(from[0] + (to[0] - from[0]) * t),
+      Math.round(from[1] + (to[1] - from[1]) * t),
+      Math.round(from[2] + (to[2] - from[2]) * t)
+    ) + ch;
+  }).join('') + T_RESET;
+}
+function stamp() {
+  const d = new Date(), p = (x) => String(x).padStart(2, '0');
+  return dim(`${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`);
+}
+const BORDER = () => gradient('  ' + '─'.repeat(34), VIOLET, CYAN);
+const log = (...a) => console.log(stamp(), gradient('⟡ pmini', VIOLET, CYAN), ...a);
+log.ok = (...a) => console.log(stamp(), gradient('✓ pmini', GREEN, CYAN), ...a);
+log.warn = (...a) => console.log(stamp(), gradient('⚠ pmini', GOLD, [255, 140, 64]), ...a);
+log.err = (...a) => console.log(stamp(), gradient('✗ pmini', RED, PINK), ...a);
+log.grad = gradient; log.dim = dim; log.bold = bold; log.border = BORDER;
+
+let bannerShown = false;
+function banner() {
+  if (bannerShown) return;
+  bannerShown = true;
+  console.log();
+  console.log(BORDER());
+  console.log(gradient('  │', VIOLET, CYAN) + '      ' + bold(gradient('J U N E   P M I N I', PINK, CYAN)));
+  console.log(gradient('  │', VIOLET, CYAN) + dim('      the quiet trio'));
+  console.log(gradient('  ╰' + '─'.repeat(34), VIOLET, CYAN));
+  console.log(dim('     autoreact · antidelete · vv — nothing else'));
+  console.log(dim('     node ' + process.version.replace('v', '') + ' · started ' + new Date().toLocaleString('en-GB', { hour12: false })));
+  console.log();
+}
 
 /* ── libsignal stdout/stderr noise filter (ported from June ..wdp) ──────
  * libsignal prints recoverable Bad MAC / SessionEntry dumps directly to
@@ -153,7 +194,7 @@ const store = {
         fs.writeFileSync(tmp, JSON.stringify(this.data, null, 1));
         fs.renameSync(tmp, DATA_FILE);
       } catch (e) {
-        console.error('[Pmini] store save failed:', e.message);
+        log.err('store save failed:', e.message);
       }
     }, 1500);
     saveTimer.unref?.();
@@ -173,7 +214,7 @@ const isOwner = (jid) => {
   const num = String(jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
   return !!num && store.data.owners.includes(num);
 };
-const ctx = { store, isOwner, selfJid };
+const ctx = { store, isOwner, selfJid, log };
 const handler = require('./handler');
 
 /* ── June Session Server restore (SESSION_ID=JUNE-X~xxxxxx) ─────────────
@@ -219,6 +260,7 @@ const PAIRING_COOLDOWN_MS = 90_000;
 async function start() {
   if (starting) return;
   starting = true;
+  banner();
   try {
     store.load();
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -276,8 +318,8 @@ async function start() {
 
       if (connection === 'open') {
         retries = 0;
-        log('connected as', selfJid(sock));
-        log('trio active: autoreact ✓  antidelete ✓ (' + store.data.antideleteMode + ')  vv ✓');
+        log.ok('connected as', bold(selfJid(sock)));
+        log.ok('trio active:', gradient('autoreact ✓', GREEN, CYAN), gradient('antidelete ✓ (' + store.data.antideleteMode + ')', VIOLET, PINK), gradient('vv ✓', PINK, GOLD));
         if (!store.data.owners.length) log('tip: set OWNER_NUMBER=234xx… (env or .env) so your number can trigger vv');
         store.flush();
       }
@@ -287,20 +329,20 @@ async function start() {
       if (connection === 'close') {
         const code = lastDisconnect?.error?.output?.statusCode;
         if (code === DisconnectReason.loggedOut || code === 401 || code === 403) {
-          log('logged out / banned — wiping credentials. Restart to pair again.');
+          log.err('logged out / banned — credentials wiped. Restart to pair again.');
           store.flush();
           fs.rmSync(AUTH_DIR, { recursive: true, force: true });
           process.exit(1);
         }
         if (code === DisconnectReason.connectionReplaced || code === 440) {
-          log('connection replaced (opened elsewhere) — stopping. Close the other session and restart.');
+          log.warn('connection replaced (opened elsewhere) — stopping. Close the other session and restart.');
           store.flush();
           process.exit(0);
         }
         // every other close (incl. first-connect churn like 515): retry, STAY ALIVE
         retries++;
         const wait = Math.min(60_000, 3_000 * retries);
-        log(`connection closed (${code ?? 'unknown'}) — reconnecting in ${wait / 1000}s`);
+        log.warn(`connection closed (${code ?? 'unknown'}) — reconnecting in ${wait / 1000}s`);
         // NOTE: no .unref() here — a detached timer would let the event loop
         // empty and the panel would mark the server offline.
         setTimeout(start, wait);
@@ -315,7 +357,7 @@ async function start() {
       const replayed = type === 'append';
       for (const msg of messages) {
         try { await handler.handleMessage(sock, msg, ctx, replayed); } catch (e) {
-          console.error('[Pmini] handler error:', e.message);
+          log.err('handler error:', e.message);
         }
       }
     });
@@ -323,7 +365,7 @@ async function start() {
     sock.ev.on('messages.delete', async (item) => {
       const keys = Array.isArray(item) ? item : (item?.keys || []);
       try { await handler.handleDelete(sock, keys, ctx); } catch (e) {
-        console.error('[Pmini] antidelete error:', e.message);
+        log.err('antidelete error:', e.message);
       }
     });
 
@@ -333,7 +375,7 @@ async function start() {
     process.on('SIGTERM', () => { store.flush(); process.exit(0); });
   } catch (e) {
     starting = false;
-    console.error('[Pmini] start failed:', e.message, '— retrying in 15s');
+    log.err('start failed:', e.message, '— retrying in 15s');
     setTimeout(start, 15_000);
   }
 }

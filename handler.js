@@ -17,7 +17,6 @@ const HISTORY_TTL = 48 * 60 * 60 * 1000;   // 48h antidelete history
 const MAX_PER_CHAT = 200;
 const VO_TTL = 10 * 60 * 1000;             // view-once reaction window
 
-const log = (...a) => console.log('[Pmini]', ...a);
 
 /* ── generic helpers (inlined — no utils folder) ──────────────────────── */
 const digits = (v) => String(v || '').split('@')[0].split(':')[0].replace(/\D/g, '');
@@ -206,27 +205,9 @@ async function handleDelete(sock, keys, ctx) {
     const target = mode === 'chat' ? chatId : ctx.selfJid(sock);
     let label = '';
     if (mode === 'private' && chatId !== target) label = chatId.endsWith('@g.us') ? 'group chat' : `DM ${digits(chatId)}`;
-    try { await recoverEntry(sock, ctx, entry, label, target); } catch (e) { log('recover failed:', e.message); }
+    try { await recoverEntry(sock, ctx, entry, label, target); } catch (e) { ctx.log.warn('recover failed:', e.message); }
   }
   ctx.store.save();
-}
-
-/* ── raw message debug — no more guessing ───────────────────────────────
- * Every incoming message prints one line: id, sender name and the exact
- * wrapper path (e.g. ephemeralMessage › viewOnceMessageV2Extension › imageMessage).
- * Set PMINI_RAW=1 (env/.env) to ALSO dump the full raw JSON of each message. */
-function msgShape(m, out = [], d = 0) {
-  if (!m || typeof m !== 'object' || d > 5) return out.join(' › ');
-  const k = Object.keys(m)[0];
-  if (!k) return out.join(' › ');
-  out.push(k);
-  const node = m[k];
-  if (node && typeof node === 'object' && node.message) return msgShape(node.message, out, d + 1);
-  if (node && typeof node === 'object') {
-    const inner = Object.keys(node).filter(x => /Message$/.test(x) || x === 'conversation' || x === 'text' || x === 'viewOnce');
-    if (inner.length && inner[0] !== k) out.push('· ' + inner.join(','));
-  }
-  return out.join(' › ');
 }
 
 /* ── main entry ───────────────────────────────────────────────────────── */
@@ -240,10 +221,10 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
 
   const isGroup = from.endsWith('@g.us');
 
-  try {
-    log('←', replayed ? '[replay]' : '[live]', msg.key.id, 'from', digits(msg.key.participant || from), (msg.pushName || ''), '»', msgShape(msg.message));
-    if (String(process.env.PMINI_RAW || '') === '1') console.log('[RAW MESSAGE]', JSON.stringify(msg, null, 2));
-  } catch (_) {}
+  // quiet by default (normal-log style). PMINI_RAW=1 dumps full JSON for debugging.
+  if (String(process.env.PMINI_RAW || '') === '1') {
+    try { console.log('[RAW MESSAGE]', JSON.stringify(msg, null, 2)); } catch (_) {}
+  }
 
   // replayed backlog: capture-only (antidelete history + vv cache) — never act
   if (replayed) { cacheViewOnce(msg); storeForAntidelete(ctx, msg); return; }
@@ -339,8 +320,8 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
     const vo = extractVo(msg.message);
     if (vo) {
       const ok = await revealVo(sock, msg, ctx.selfJid(sock)).catch(() => false);
-      if (ok) { markRevealed(msg.key.id); log('vv auto → your DM ✓'); }
-      else log('vv auto could not download yet — react or reply .vv within 10 min');
+      if (ok) { markRevealed(msg.key.id); ctx.log.ok('vv auto → your DM ✓'); }
+      else ctx.log('vv auto: download failed — react or reply .vv within 10 min');
     }
   }
 
@@ -352,7 +333,7 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
       const emoji = ar.random ? EMOJIS[Math.floor(Math.random() * EMOJIS.length)] : (ar.emoji || EMOJIS[0]);
       await sock.sendMessage(from, { react: { text: emoji, key: msg.key } });
     }
-  } catch (e) { log('autoreact failed:', e.message); }
+  } catch (e) { ctx.log.warn('autoreact failed:', e.message); }
 }
 
 module.exports = { handleMessage, handleDelete, pruneHistory, _internals };

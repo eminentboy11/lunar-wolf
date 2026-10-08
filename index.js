@@ -152,6 +152,7 @@ const DEFAULTS = {
   owners: [],                 // phone numbers (digits) — seeded from OWNER_NUMBER env
   antideleteMode: 'private',  // 'chat' (reply in same chat) | 'private' (DM self) | 'off'
   vvAuto: true,               // view-once → straight to owner DM, no reaction needed
+  revealed: {},               // msgId → ts; persists across restarts so replays never double-send
   autoReact: {
     enabled: true,
     target: 'both',           // 'dms' | 'groups' | 'both'

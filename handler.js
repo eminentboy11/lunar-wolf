@@ -90,12 +90,17 @@ function extractVo(rawMessage) {
 }
 
 const voCache = new Map();  // msgId → { msg, expires }
-const revealed = new Map(); // msgId → revealed-at (prevents double sends)
-function markRevealed(id) { if (id) revealed.set(id, Date.now()); }
-function wasRevealed(id) {
-  const t = revealed.get(id);
+// revealed-map lives in the JSON store so a restart (and the message replay
+// that follows) can never double-send a view-once to the owner DM.
+function markRevealed(ctx, id) {
+  if (!id || !ctx?.store?.data) return;
+  ctx.store.data.revealed[id] = Date.now();
+  ctx.store.save();
+}
+function wasRevealed(ctx, id) {
+  const t = id && ctx?.store?.data?.revealed?.[id];
   if (!t) return false;
-  if (Date.now() - t > VO_TTL) { revealed.delete(id); return false; }
+  if (Date.now() - t > VO_TTL) { delete ctx.store.data.revealed[id]; return false; }
   return true;
 }
 function cacheViewOnce(msg) {
@@ -105,7 +110,6 @@ function cacheViewOnce(msg) {
   if (voCache.size % 20 === 0) {
     const now = Date.now();
     for (const [k, v] of voCache) if (v.expires < now) voCache.delete(k);
-    for (const [k, t] of revealed) if (now - t > VO_TTL) revealed.delete(k);
   }
   voCache.set(msg.key.id, { msg, expires: Date.now() + VO_TTL });
 }
@@ -161,6 +165,8 @@ function pruneHistory(ctx) {
     if (!Object.keys(msgs[chatId]).length) delete msgs[chatId];
     else total += Object.keys(msgs[chatId]).length;
   }
+  const rev = ctx.store.data.revealed || {};
+  for (const id of Object.keys(rev)) if (Date.now() - rev[id] > VO_TTL) delete rev[id];
   ctx.store.save();
   return total;
 }
@@ -210,6 +216,17 @@ async function handleDelete(sock, keys, ctx) {
   ctx.store.save();
 }
 
+/* ── vv auto: view-once → owner DM, no interaction needed ─────────────── */
+async function autoRevealVo(sock, ctx, msg) {
+  try {
+    if (ctx.store.data.vvAuto === false || msg.key.fromMe || wasRevealed(ctx, msg.key.id)) return;
+    if (!extractVo(msg.message)) return;
+    const ok = await revealVo(sock, msg, ctx.selfJid(sock)).catch(() => false);
+    if (ok) { markRevealed(ctx, msg.key.id); ctx.log.ok('vv auto → your DM ✓'); }
+    else ctx.log('vv auto: download failed — react or reply .vv within 10 min');
+  } catch (e) { ctx.log.warn('vv auto error:', e.message); }
+}
+
 /* ── main entry ───────────────────────────────────────────────────────── */
 async function handleMessage(sock, msg, ctx, replayed = false) {
   if (!msg.message || !msg.key?.id) return;
@@ -226,8 +243,15 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
     try { console.log('[RAW MESSAGE]', JSON.stringify(msg, null, 2)); } catch (_) {}
   }
 
-  // replayed backlog: capture-only (antidelete history + vv cache) — never act
-  if (replayed) { cacheViewOnce(msg); storeForAntidelete(ctx, msg); return; }
+  // replayed backlog: capture for history + cache, and auto-reveal view-onces
+  // (photos sent while the bot was down land in the owner DM on boot) — but
+  // never autoreact or run commands from a replay.
+  if (replayed) {
+    cacheViewOnce(msg);
+    storeForAntidelete(ctx, msg);
+    await autoRevealVo(sock, ctx, msg);
+    return;
+  }
 
   // ── hardcoded owner commands — .vv / .autoreact / .antidelete ──────────
   // No command loader, no commands folder: exactly these three, owner-only,
@@ -242,6 +266,11 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
 
       if (c === 'vv') {
         const sub = (args[0] || '').toLowerCase();
+        if (sub === 'auto') { // natural alias — "auto" means on
+          ctx.store.data.vvAuto = true;
+          ctx.store.save();
+          return reply('vv auto → ON ✅ (view-once lands in your DM by itself)');
+        }
         if (sub === 'on' || sub === 'off') {
           ctx.store.data.vvAuto = sub === 'on';
           ctx.store.save();
@@ -251,7 +280,7 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
         const cached = quotedId ? voCache.get(quotedId) : null;
         if (cached && cached.expires > Date.now()) {
           const ok = await revealVo(sock, cached.msg, ctx.selfJid(sock)).catch(() => false);
-          if (ok) markRevealed(quotedId);
+          if (ok) markRevealed(ctx, quotedId);
           return reply(ok ? '✅ revealed to your DM' : '⚠️ could not download that view-once (media expired)');
         }
         // cache missed (bot restarted, or arrived pre-boot): the quote itself
@@ -304,7 +333,7 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
       const cached = rx.key?.id ? voCache.get(rx.key.id) : null;
       if (cached && cached.expires > Date.now()) {
         const ok = await revealVo(sock, cached.msg, ctx.selfJid(sock)).catch(() => false);
-        if (ok) await sock.sendMessage(from, { react: { text: '✅', key: msg.key } }).catch(() => {});
+        if (ok) { markRevealed(ctx, rx.key?.id); await sock.sendMessage(from, { react: { text: '✅', key: msg.key } }).catch(() => {}); }
       }
     }
     return; // reactions never need anything else
@@ -312,18 +341,7 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
 
   cacheViewOnce(msg);
   storeForAntidelete(ctx, msg);
-
-  // ── vv auto: view-once → owner DM, no interaction needed ──────────────
-  // fromMe VOs are yours already; a failed auto-download leaves the message
-  // unmarked so the reaction / .vv fallbacks still work within the window.
-  if (ctx.store.data.vvAuto !== false && !msg.key.fromMe && !wasRevealed(msg.key.id)) {
-    const vo = extractVo(msg.message);
-    if (vo) {
-      const ok = await revealVo(sock, msg, ctx.selfJid(sock)).catch(() => false);
-      if (ok) { markRevealed(msg.key.id); ctx.log.ok('vv auto → your DM ✓'); }
-      else ctx.log('vv auto: download failed — react or reply .vv within 10 min');
-    }
-  }
+  await autoRevealVo(sock, ctx, msg);
 
   // ── autoreact ──────────────────────────────────────────────────────────
   try {

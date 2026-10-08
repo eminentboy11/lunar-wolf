@@ -217,7 +217,7 @@ function msgShape(m, out = [], d = 0) {
 }
 
 /* ── main entry ───────────────────────────────────────────────────────── */
-async function handleMessage(sock, msg, ctx) {
+async function handleMessage(sock, msg, ctx, replayed = false) {
   if (!msg.message || !msg.key?.id) return;
 
   // LID DM fix — @lid jids need remoteJidAlt to actually reply
@@ -228,9 +228,12 @@ async function handleMessage(sock, msg, ctx) {
   const isGroup = from.endsWith('@g.us');
 
   try {
-    log('←', msg.key.id, 'from', digits(msg.key.participant || from), (msg.pushName || ''), '»', msgShape(msg.message));
-    if (String(process.env.PMINI_RAW || '') === '1') log('raw»', JSON.stringify(msg.message).slice(0, 6000));
+    log('←', replayed ? '[replay]' : '[live]', msg.key.id, 'from', digits(msg.key.participant || from), (msg.pushName || ''), '»', msgShape(msg.message));
+    if (String(process.env.PMINI_RAW || '') === '1') console.log('[RAW MESSAGE]', JSON.stringify(msg, null, 2));
   } catch (_) {}
+
+  // replayed backlog: capture-only (antidelete history + vv cache) — never act
+  if (replayed) { cacheViewOnce(msg); storeForAntidelete(ctx, msg); return; }
 
   // ── hardcoded owner commands — .vv / .autoreact / .antidelete ──────────
   // No command loader, no commands folder: exactly these three, owner-only,

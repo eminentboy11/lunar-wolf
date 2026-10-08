@@ -307,9 +307,13 @@ async function start() {
     });
 
     sock.ev.on('messages.upsert', async ({ type, messages }) => {
-      if (type !== 'notify') return; // ignore history/appends
+      // 'notify' = live traffic; 'append' = messages replayed after downtime.
+      // The trio needs replays (antidelete history + vv cache) — actions that
+      // touch the user (autoreact, commands) run on live traffic only.
+      if (type !== 'notify' && type !== 'append') return;
+      const replayed = type === 'append';
       for (const msg of messages) {
-        try { await handler.handleMessage(sock, msg, ctx); } catch (e) {
+        try { await handler.handleMessage(sock, msg, ctx, replayed); } catch (e) {
           console.error('[Pmini] handler error:', e.message);
         }
       }

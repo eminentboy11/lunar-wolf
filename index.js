@@ -16,6 +16,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -99,6 +100,40 @@ const isOwner = (jid) => {
 };
 const ctx = { store, isOwner, selfJid };
 const handler = require('./handler');
+
+/* ── June Session Server restore (SESSION_ID=JUNE-X~xxxxxx) ─────────────
+ * The server serves "<prefix>~<gzip(base64 creds.json)>" — a Baileys creds
+ * blob from when the number was paired on the June pair site. Restoring just
+ * creds is enough: Baileys re-uploads pre-keys on the next connect.
+ * No SESSION_ID (or a failed fetch) → automatic fallback to QR/pairing code. */
+const JUNE_HANDLE = /^JUNE-X~[A-Za-z0-9]{4,20}$/i;
+const SESSION_SERVER = String(process.env.JUNE_SESSION_SERVER_URL ||
+  'https://burning-lorena-eminentbo-ede53cc1.koyeb.app').replace(/\/+$/, '');
+
+async function restoreJuneSession() {
+  const handle = String(process.env.SESSION_ID || '').trim();
+  if (!JUNE_HANDLE.test(handle)) return false;
+  const credsFile = path.join(AUTH_DIR, 'creds.json');
+  if (fs.existsSync(credsFile)) {
+    log('local session found — June server restore skipped');
+    return true;
+  }
+  log('fetching session from June server…');
+  const res = await fetch(`${SESSION_SERVER}/session/${encodeURIComponent(handle)}`, {
+    headers: { Accept: 'text/plain' },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) throw new Error(`June server HTTP ${res.status} (handle unknown or revoked?)`);
+  const text = (await res.text()).trim();
+  const tilde = text.indexOf('~');
+  const blob = tilde >= 0 ? text.slice(tilde + 1) : text;
+  const creds = JSON.parse(zlib.gunzipSync(Buffer.from(blob, 'base64')).toString('utf8'));
+  if (!creds || typeof creds !== 'object' || !creds.noiseKey) throw new Error('session blob is not valid Baileys creds');
+  fs.mkdirSync(AUTH_DIR, { recursive: true });
+  fs.writeFileSync(credsFile, JSON.stringify(creds, null, 1));
+  log('session restored from June server ✓  (' + handle.slice(0, 8) + '…)');
+  return true;
+}
 
 /* ── boot ─────────────────────────────────────────────────────────────── */
 let starting = false;
@@ -235,4 +270,11 @@ function silentLogger() {
 process.on('unhandledRejection', (e) => console.error('[Pmini] unhandled rejection:', e?.message || e));
 process.on('uncaughtException', (e) => { console.error('[Pmini] uncaught exception:', e?.message || e); store.flush(); });
 
-start().catch((e) => { console.error('[Pmini] fatal:', e); process.exit(1); });
+(async () => {
+  try { await restoreJuneSession(); }
+  catch (e) {
+    log('June session restore failed:', e.message);
+    log('falling back to manual pairing (QR / PHONE= pairing code)');
+  }
+  if (!process.env.PMINI_STANDBY) await start();
+})().catch((e) => { console.error('[Pmini] fatal:', e); process.exit(1); });

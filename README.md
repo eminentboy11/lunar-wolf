@@ -15,8 +15,17 @@ npm install
 node index.js
 ```
 
-First run prints a **QR** — scan it from WhatsApp → Linked devices.
-Or `PHONE=2348012345678 node index.js` to get a **pairing code** instead.
+### Login — two ways
+
+**1. June Session Server (no scanning, no codes):** put a June handle in the env and the bot pulls the session itself:
+
+```
+SESSION_ID=JUNE-X~yourhandle
+```
+
+On boot it fetches the session blob from the June server, stores it in `session/`, and connects. If the handle is revoked/unknown or the server is down, it falls back to manual pairing automatically. Once `session/creds.json` exists, the local session is used (no re-fetch) until it logs out.
+
+**2. Manual pairing:** first run prints a **QR** — scan from WhatsApp → Linked devices. Or set `PHONE=2348012345678` for a **pairing code** instead (one code per 90s window, so it can't be rotated out from under you).
 
 Optional: `OWNER_NUMBER=2348012345678` (comma-separate several) — seeds the owners list; your own linked number always counts for vv via fromMe.
 

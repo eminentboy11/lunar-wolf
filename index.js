@@ -32,6 +32,80 @@ const DATA_FILE = path.join(DATA_DIR, 'pmini.json');
 
 const log = (...a) => console.log('[Pmini]', ...a);
 
+/* ── libsignal stdout/stderr noise filter (ported from June ..wdp) ──────
+ * libsignal prints recoverable Bad MAC / SessionEntry dumps directly to
+ * stdout/stderr, bypassing every logger. Filter at the stream level:
+ * a known-noise line opens a 2.5s window that also eats the stack frames
+ * libsignal writes as separate chunks right after. */
+const originalWrite = process.stdout.write;
+const originalWriteError = process.stderr.write;
+const originalLog = console.log;
+let suppressSignalStackUntil = 0;
+
+const SIGNAL_NOISE_PATTERNS = [
+    'closing session: sessionentry',
+    'sessionentry {',
+    'failed to decrypt message with any known session',
+    'session error: error: bad mac',
+    'bad mac error: bad mac',
+    'decrypted message with closed session',
+    'incoming prekey bundle',
+];
+
+function outputText(chunk) {
+    if (typeof chunk === 'string') return chunk;
+    if (Buffer.isBuffer(chunk)) return chunk.toString('utf8');
+    try { return String(chunk); } catch (_) { return ''; }
+}
+
+function shouldSuppressSignalNoise(chunk) {
+    const message = outputText(chunk);
+    const lower = message.toLowerCase();
+    const isKnownNoise = SIGNAL_NOISE_PATTERNS.some((pattern) => lower.includes(pattern));
+
+    if (isKnownNoise) {
+        suppressSignalStackUntil = Date.now() + 2500;
+        return true;
+    }
+
+    const isLibsignalFrame =
+        lower.includes('/libsignal/') ||
+        lower.includes('session_cipher.js') ||
+        lower.includes('queue_job.js') ||
+        /^\s*at\s/.test(message) ||
+        lower.trim() === '...';
+
+    return Date.now() < suppressSignalStackUntil && isLibsignalFrame;
+}
+
+function acknowledgeSuppressedWrite(encoding, callback) {
+    const done = typeof encoding === 'function' ? encoding : callback;
+    if (typeof done === 'function') {
+        try { done(); } catch (_) {}
+    }
+    return true;
+}
+
+process.stdout.write = function (chunk, encoding, callback) {
+    if (shouldSuppressSignalNoise(chunk)) {
+        return acknowledgeSuppressedWrite(encoding, callback);
+    }
+    return originalWrite.apply(this, arguments);
+};
+
+process.stderr.write = function (chunk, encoding, callback) {
+    if (shouldSuppressSignalNoise(chunk)) {
+        return acknowledgeSuppressedWrite(encoding, callback);
+    }
+    return originalWriteError.apply(this, arguments);
+};
+
+console.log = function (message, ...optionalParams) {
+    if (shouldSuppressSignalNoise(message)) return;
+    originalLog.apply(console, [message, ...optionalParams]);
+};
+
+
 /* ── JSON store: owners, settings, antidelete history ─────────────────── */
 const DEFAULTS = {
   owners: [],                 // phone numbers (digits) — seeded from OWNER_NUMBER env

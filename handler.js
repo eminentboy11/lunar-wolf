@@ -62,6 +62,7 @@ async function downloadMedia(content, kind) {
   for await (const chunk of stream) chunks.push(chunk);
   return Buffer.concat(chunks);
 }
+const _internals = { downloadMedia };  // test seam
 
 /* ── vv: view-once cache + reveal ─────────────────────────────────────── */
 const VO_WRAPPERS = ['viewOnceMessageV2Extension', 'viewOnceMessageV2', 'viewOnceMessage'];
@@ -89,12 +90,24 @@ function extractVo(rawMessage) {
   return null;
 }
 
-const voCache = new Map(); // msgId → { msg, expires }
+const voCache = new Map();  // msgId → { msg, expires }
+const revealed = new Map(); // msgId → revealed-at (prevents double sends)
+function markRevealed(id) { if (id) revealed.set(id, Date.now()); }
+function wasRevealed(id) {
+  const t = revealed.get(id);
+  if (!t) return false;
+  if (Date.now() - t > VO_TTL) { revealed.delete(id); return false; }
+  return true;
+}
 function cacheViewOnce(msg) {
   if (!msg.key?.id) return;
   const vo = extractVo(msg.message);
   if (!vo) return;
-  if (voCache.size % 20 === 0) { const now = Date.now(); for (const [k, v] of voCache) if (v.expires < now) voCache.delete(k); }
+  if (voCache.size % 20 === 0) {
+    const now = Date.now();
+    for (const [k, v] of voCache) if (v.expires < now) voCache.delete(k);
+    for (const [k, t] of revealed) if (now - t > VO_TTL) revealed.delete(k);
+  }
   voCache.set(msg.key.id, { msg, expires: Date.now() + VO_TTL });
 }
 
@@ -103,11 +116,11 @@ async function revealVo(sock, originalMsg, targetJid) {
   if (!vo) return false;
   const { content, kind } = vo;
   const caption = content.caption || '';
-  if (kind === 'image') await sock.sendMessage(targetJid, { image: await downloadMedia(content, kind), caption: caption || '🖼️ view-once' });
-  else if (kind === 'video') await sock.sendMessage(targetJid, { video: await downloadMedia(content, kind), caption: caption || '🎬 view-once' });
-  else if (kind === 'audio') await sock.sendMessage(targetJid, { audio: await downloadMedia(content, kind), ptt: content.ptt === true });
-  else if (kind === 'sticker') await sock.sendMessage(targetJid, { sticker: await downloadMedia(content, kind) });
-  else await sock.sendMessage(targetJid, { document: await downloadMedia(content, kind), fileName: content.fileName || 'file', caption: caption || '📄 view-once' });
+  if (kind === 'image') await sock.sendMessage(targetJid, { image: await _internals.downloadMedia(content, kind), caption: caption || '🖼️ view-once' });
+  else if (kind === 'video') await sock.sendMessage(targetJid, { video: await _internals.downloadMedia(content, kind), caption: caption || '🎬 view-once' });
+  else if (kind === 'audio') await sock.sendMessage(targetJid, { audio: await _internals.downloadMedia(content, kind), ptt: content.ptt === true });
+  else if (kind === 'sticker') await sock.sendMessage(targetJid, { sticker: await _internals.downloadMedia(content, kind) });
+  else await sock.sendMessage(targetJid, { document: await _internals.downloadMedia(content, kind), fileName: content.fileName || 'file', caption: caption || '📄 view-once' });
   return true;
 }
 
@@ -172,7 +185,7 @@ async function recoverEntry(sock, ctx, entry, chatLabel, target) {
   const content = inner[mtype];
   const kind = MEDIA_MAP[mtype];
   let buffer = null;
-  try { buffer = await downloadMedia(content, kind); } catch (_) {}
+  try { buffer = await _internals.downloadMedia(content, kind); } catch (_) {}
   const caption = `${head}${entry.text ? `\n📝 ${entry.text}` : ''}`;
   if (!buffer) { await sock.sendMessage(target, { text: `${head}\n⚠️ media expired (CDN link gone)`, mentions }); return; }
   if (kind === 'image') await sock.sendMessage(target, { image: buffer, caption, mentions });
@@ -247,10 +260,17 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
       const reply = (t) => sock.sendMessage(from, { text: t }, { quoted: msg }).catch(() => {});
 
       if (c === 'vv') {
+        const sub = (args[0] || '').toLowerCase();
+        if (sub === 'on' || sub === 'off') {
+          ctx.store.data.vvAuto = sub === 'on';
+          ctx.store.save();
+          return reply(`vv auto → ${sub === 'on' ? 'ON ✅ (view-once lands in your DM by itself)' : 'OFF (react or .vv to reveal)'}`);
+        }
         const quotedId = msg.message.extendedTextMessage?.contextInfo?.stanzaId;
         const cached = quotedId ? voCache.get(quotedId) : null;
         if (cached && cached.expires > Date.now()) {
           const ok = await revealVo(sock, cached.msg, ctx.selfJid(sock)).catch(() => false);
+          if (ok) markRevealed(quotedId);
           return reply(ok ? '✅ revealed to your DM' : '⚠️ could not download that view-once (media expired)');
         }
         // cache missed (bot restarted, or arrived pre-boot): the quote itself
@@ -260,7 +280,7 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
           const ok = await revealVo(sock, { message: quotedMsg }, ctx.selfJid(sock)).catch(() => false);
           return reply(ok ? '✅ revealed to your DM' : '⚠️ found it in the quote but the media link is dead');
         }
-        return reply('⚠️ no view-once found (10 min cache window passed and the quote carries no media)');
+        return reply('⚠️ no view-once found (10 min cache window passed and the quote carries no media) — .vv on|off toggles auto mode');
       }
 
       if (c === 'autoreact') {
@@ -312,6 +332,18 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
   cacheViewOnce(msg);
   storeForAntidelete(ctx, msg);
 
+  // ── vv auto: view-once → owner DM, no interaction needed ──────────────
+  // fromMe VOs are yours already; a failed auto-download leaves the message
+  // unmarked so the reaction / .vv fallbacks still work within the window.
+  if (ctx.store.data.vvAuto !== false && !msg.key.fromMe && !wasRevealed(msg.key.id)) {
+    const vo = extractVo(msg.message);
+    if (vo) {
+      const ok = await revealVo(sock, msg, ctx.selfJid(sock)).catch(() => false);
+      if (ok) { markRevealed(msg.key.id); log('vv auto → your DM ✓'); }
+      else log('vv auto could not download yet — react or reply .vv within 10 min');
+    }
+  }
+
   // ── autoreact ──────────────────────────────────────────────────────────
   try {
     const ar = ctx.store.data.autoReact;
@@ -323,4 +355,4 @@ async function handleMessage(sock, msg, ctx, replayed = false) {
   } catch (e) { log('autoreact failed:', e.message); }
 }
 
-module.exports = { handleMessage, handleDelete, pruneHistory };
+module.exports = { handleMessage, handleDelete, pruneHistory, _internals };

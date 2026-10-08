@@ -6,7 +6,7 @@ Minimal personal WhatsApp bot. **Two code files, zero commands.**
 |---|---|
 | **autoreact** | Reacts to every incoming message (random emoji pool, or a fixed one) |
 | **antidelete** | Snapshots messages; when one is revoked it's recovered — to the original chat (`chat` mode) or your own DM (`private` mode). Media included for ~48h |
-| **vv** | React to any view-once message from your own number (or an owner number) → the media is revealed into your own DM with a ✅ |
+| **vv** | **Automatic**: every view-once from other people lands in your DM the moment it arrives. Manual fallbacks: react to it with any emoji, or reply `.vv`. Toggle with `.vv on\|off` |
 
 ## Run
 
@@ -53,7 +53,7 @@ Hardcoded, owner-only (your number / `OWNER_NUMBER` / fromMe), prefix `.` — no
 |---|---|
 | `.antidelete` | show mode · `.antidelete chat\|private\|off` to switch (saved live) |
 | `.autoreact` | show state · `.autoreact on\|off` · `.autoreact dms\|groups\|both` · `.autoreact random` · `.autoreact fixed <emoji>` |
-| `.vv` | reply to a view-once with `.vv` → media revealed into your DM (same 10-min window as the reaction trigger) |
+| `.vv` | reply to a view-once → revealed into your DM · `.vv on\|off` toggles automatic mode |
 
 Unknown `.` commands are ignored. Non-owners are ignored completely.
 

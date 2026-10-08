@@ -103,6 +103,8 @@ const handler = require('./handler');
 /* ── boot ─────────────────────────────────────────────────────────────── */
 let starting = false;
 let retries = 0;
+let lastPairingIssued = 0;
+const PAIRING_COOLDOWN_MS = 90_000;
 
 async function start() {
   if (starting) return;
@@ -133,16 +135,29 @@ async function start() {
 
       if (qr && !state.creds.registered) {
         const phone = String(process.env.PHONE || '').replace(/\D/g, '');
+        const due = Date.now() - lastPairingIssued >= PAIRING_COOLDOWN_MS;
         if (phone) {
-          try {
-            const code = await sock.requestPairingCode(phone);
-            log('─────────────────────────────────');
-            log(`PAIRING CODE for +${phone}:`);
-            log(`    ${String(code).match(/.{1,4}/g)?.join('-')}`);
-            log('WhatsApp → Settings → Linked devices → Link with phone number');
-            log('─────────────────────────────────');
-          } catch (e) { log('pairing code failed:', e.message); }
-        } else {
+          // Issue ONE code, then stay quiet for 90s — every new request
+          // invalidates the previous code, so spamming rotations makes the
+          // user's code die before they can type it.
+          if (due) {
+            lastPairingIssued = Date.now();
+            setTimeout(async () => {
+              try {
+                if (state.creds.registered) return;
+                const code = await sock.requestPairingCode(phone);
+                log('─────────────────────────────────');
+                log(`PAIRING CODE for +${phone}:`);
+                log(`    ${String(code).match(/.{1,4}/g)?.join('-')}`);
+                log('enter it NOW (valid ~1 min):');
+                log('WhatsApp → Settings → Linked devices → Link with phone number');
+                log('a fresh code appears automatically if this one expires');
+                log('─────────────────────────────────');
+              } catch (e) { log('pairing code failed:', e.message); }
+            }, 3000);
+          }
+        } else if (due) {
+          lastPairingIssued = Date.now();
           try { require('qrcode-terminal').generate(qr, { small: true }); }
           catch (_) { log('QR (paste into any qr viewer):', qr); }
           log('or restart with PHONE=234xx… (env or .env) to use a pairing code');

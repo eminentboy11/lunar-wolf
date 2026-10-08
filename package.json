@@ -1,0 +1,17 @@
+{
+  "name": "lunar-wolf",
+  "version": "1.0.0",
+  "description": "June Pmini — minimal personal WhatsApp bot (autoreact, antidelete, view-once reveal). Two files, no commands.",
+  "main": "index.js",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

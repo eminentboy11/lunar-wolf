@@ -354,17 +354,31 @@ async function start() {
     });
 
     sock.ev.on('messages.upsert', async ({ type, messages }) => {
-      // 'notify' = live traffic; 'append' = messages replayed after downtime.
-      // The trio needs replays (antidelete history + vv cache) — actions that
-      // touch the user (autoreact, commands) run on live traffic only.
-      if (type !== 'notify' && type !== 'append') return;
-      const replayed = type === 'append';
-      for (const msg of messages) {
-        try { await handler.handleMessage(sock, msg, ctx, replayed); } catch (e) {
-          log.err('handler error:', e.message);
-        }
-      }
+  console.log('[UPSERT EVENT]', {
+    type,
+    count: messages.length
+  });
+
+  if (type !== 'notify' && type !== 'append') return;
+
+  const replayed = type === 'append';
+
+  for (const msg of messages) {
+    console.log('[INDEX RAW MESSAGE]', {
+      id: msg?.key?.id,
+      remoteJid: msg?.key?.remoteJid,
+      hasMessage: !!msg?.message,
+      messageKeys: Object.keys(msg?.message || {}),
+      messageStubType: msg?.messageStubType
     });
+
+    try {
+      await handler.handleMessage(sock, msg, ctx, replayed);
+    } catch (e) {
+      log.err('handler error:', e.message);
+    }
+  }
+});
 
     sock.ev.on('messages.delete', async (item) => {
       const keys = Array.isArray(item) ? item : (item?.keys || []);

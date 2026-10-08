@@ -198,6 +198,24 @@ async function handleDelete(sock, keys, ctx) {
   ctx.store.save();
 }
 
+/* ── raw message debug — no more guessing ───────────────────────────────
+ * Every incoming message prints one line: id, sender name and the exact
+ * wrapper path (e.g. ephemeralMessage › viewOnceMessageV2Extension › imageMessage).
+ * Set PMINI_RAW=1 (env/.env) to ALSO dump the full raw JSON of each message. */
+function msgShape(m, out = [], d = 0) {
+  if (!m || typeof m !== 'object' || d > 5) return out.join(' › ');
+  const k = Object.keys(m)[0];
+  if (!k) return out.join(' › ');
+  out.push(k);
+  const node = m[k];
+  if (node && typeof node === 'object' && node.message) return msgShape(node.message, out, d + 1);
+  if (node && typeof node === 'object') {
+    const inner = Object.keys(node).filter(x => /Message$/.test(x) || x === 'conversation' || x === 'text' || x === 'viewOnce');
+    if (inner.length && inner[0] !== k) out.push('· ' + inner.join(','));
+  }
+  return out.join(' › ');
+}
+
 /* ── main entry ───────────────────────────────────────────────────────── */
 async function handleMessage(sock, msg, ctx) {
   if (!msg.message || !msg.key?.id) return;
@@ -208,6 +226,11 @@ async function handleMessage(sock, msg, ctx) {
   if (from === 'status@broadcast') return;
 
   const isGroup = from.endsWith('@g.us');
+
+  try {
+    log('←', msg.key.id, 'from', digits(msg.key.participant || from), (msg.pushName || ''), '»', msgShape(msg.message));
+    if (String(process.env.PMINI_RAW || '') === '1') log('raw»', JSON.stringify(msg.message).slice(0, 6000));
+  } catch (_) {}
 
   // ── hardcoded owner commands — .vv / .autoreact / .antidelete ──────────
   // No command loader, no commands folder: exactly these three, owner-only,

@@ -64,36 +64,44 @@ async function downloadMedia(content, kind) {
 }
 
 /* ── vv: view-once cache + reveal ─────────────────────────────────────── */
+const VO_WRAPPERS = ['viewOnceMessageV2Extension', 'viewOnceMessageV2', 'viewOnceMessage'];
+
+// Single source of truth for "is there view-once media in here?" — handles
+// every wire shape: bare wrapper, ephemeral-wrapped (disappearing-message
+// chats!), any nesting depth, and direct viewOnce flags on bare media.
+function extractVo(rawMessage) {
+  let raw = rawMessage || {};
+  for (let i = 0; i < 5 && raw; i++) {
+    for (const w of VO_WRAPPERS) {
+      const inner = raw[w]?.message;
+      if (inner) {
+        const mtype = Object.keys(inner).find(k => MEDIA_MAP[k]);
+        if (mtype) return { content: inner[mtype], mtype, kind: MEDIA_MAP[mtype], wrapper: w };
+      }
+    }
+    for (const [mt, k] of Object.entries(MEDIA_MAP)) {
+      if (raw[mt]?.viewOnce) return { content: { ...raw[mt], viewOnce: false }, mtype: mt, kind: k, wrapper: 'direct' };
+    }
+    const deeper = raw.ephemeralMessage?.message || raw.viewOnceMessage?.message;
+    if (!deeper || deeper === raw) break;
+    raw = deeper;
+  }
+  return null;
+}
+
 const voCache = new Map(); // msgId → { msg, expires }
 function cacheViewOnce(msg) {
-  const raw = msg.message || {};
-  const isVO =
-    !!raw.viewOnceMessageV2Extension || !!raw.viewOnceMessageV2 || !!raw.viewOnceMessage ||
-    !!raw.ephemeralMessage?.message?.viewOnceMessageV2 ||
-    raw.imageMessage?.viewOnce || raw.videoMessage?.viewOnce || raw.audioMessage?.viewOnce;
-  if (!isVO || !msg.key?.id) return;
+  if (!msg.key?.id) return;
+  const vo = extractVo(msg.message);
+  if (!vo) return;
   if (voCache.size % 20 === 0) { const now = Date.now(); for (const [k, v] of voCache) if (v.expires < now) voCache.delete(k); }
   voCache.set(msg.key.id, { msg, expires: Date.now() + VO_TTL });
 }
 
 async function revealVo(sock, originalMsg, targetJid) {
-  let raw = originalMsg.message || {};
-  if (raw.ephemeralMessage?.message) raw = raw.ephemeralMessage.message;
-  const WRAPPERS = ['viewOnceMessageV2Extension', 'viewOnceMessageV2', 'viewOnceMessage'];
-  let content = null, kind = null, mtype = null;
-  for (const w of WRAPPERS) {
-    const inner = raw[w]?.message;
-    if (inner) {
-      mtype = Object.keys(inner).find(k => MEDIA_MAP[k]);
-      if (mtype) { content = inner[mtype]; kind = MEDIA_MAP[mtype]; break; }
-    }
-  }
-  if (!content) { // direct viewOnce flag on a bare media message
-    for (const [mt, k] of Object.entries(MEDIA_MAP)) {
-      if (raw[mt]?.viewOnce) { content = { ...raw[mt], viewOnce: false }; mtype = mt; kind = k; break; }
-    }
-  }
-  if (!content) return false;
+  const vo = extractVo(originalMsg.message);
+  if (!vo) return false;
+  const { content, kind } = vo;
   const caption = content.caption || '';
   if (kind === 'image') await sock.sendMessage(targetJid, { image: await downloadMedia(content, kind), caption: caption || '🖼️ view-once' });
   else if (kind === 'video') await sock.sendMessage(targetJid, { video: await downloadMedia(content, kind), caption: caption || '🎬 view-once' });
@@ -215,10 +223,18 @@ async function handleMessage(sock, msg, ctx) {
       if (c === 'vv') {
         const quotedId = msg.message.extendedTextMessage?.contextInfo?.stanzaId;
         const cached = quotedId ? voCache.get(quotedId) : null;
-        if (!cached || cached.expires < Date.now())
-          return reply('⚠️ no view-once cached for that message (10 min window, already revealed or too old)');
-        const ok = await revealVo(sock, cached.msg, ctx.selfJid(sock)).catch(() => false);
-        return reply(ok ? '✅ revealed to your DM' : '⚠️ could not extract that view-once');
+        if (cached && cached.expires > Date.now()) {
+          const ok = await revealVo(sock, cached.msg, ctx.selfJid(sock)).catch(() => false);
+          return reply(ok ? '✅ revealed to your DM' : '⚠️ could not download that view-once (media expired)');
+        }
+        // cache missed (bot restarted, or arrived pre-boot): the quote itself
+        // carries the view-once media — try it directly
+        const quotedMsg = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
+        if (quotedMsg && extractVo(quotedMsg)) {
+          const ok = await revealVo(sock, { message: quotedMsg }, ctx.selfJid(sock)).catch(() => false);
+          return reply(ok ? '✅ revealed to your DM' : '⚠️ found it in the quote but the media link is dead');
+        }
+        return reply('⚠️ no view-once found (10 min cache window passed and the quote carries no media)');
       }
 
       if (c === 'autoreact') {
